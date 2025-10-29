@@ -38,21 +38,23 @@ jobs:
     name: Build, Run & DAST (ZAP)
     needs: sast
     runs-on: ubuntu-latest
-    services: {}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Create Docker network
+        run: docker network create devsecops-net
 
       - name: Build Docker image
         run: docker build -t fastapi-app:${{ github.sha }} .
 
       - name: Run container
-        run: docker run -d --name fastapi-app -p 8000:8000 fastapi-app:${{ github.sha }}
+        run: docker run -d --network devsecops-net --name fastapi-app fastapi-app:${{ github.sha }}
 
       - name: Wait for app to be ready
         run: |
           for i in {1..15}; do
-            if curl -s http://localhost:8000/ >/dev/null; then
-              echo "OK"
+            if docker exec fastapi-app curl -s http://localhost:8000 >/dev/null; then
+              echo "App is ready!"
               break
             fi
             sleep 2
@@ -61,10 +63,38 @@ jobs:
       - name: Run OWASP ZAP full scan
         uses: zaproxy/action-full-scan@v0.6.0
         with:
-          target: "http://host.docker.internal:8000"
+          target: "http://fastapi-app:8000"
           cmd_options: "-r zap-report.html"
+        env:
+          DOCKER_NETWORK: devsecops-net
+
       - name: Upload ZAP report
         uses: actions/upload-artifact@v4
         with:
           name: zap-report
           path: zap-report.html
+
+  deploy_staging:
+    name: Deploy to Staging
+    needs: build_and_dast
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up SSH key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.STAGING_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy container to staging server
+        run: |
+          ssh ${{ secrets.STAGING_USER }}@${{ secrets.STAGING_HOST }} << 'EOF'
+          docker pull ghcr.io/${{ github.repository }}:latest || true
+          docker stop fastapi-staging || true
+          docker rm fastapi-staging || true
+          docker run -d --name fastapi-staging -p 8000:8000 ghcr.io/${{ github.repository }}:latest
+          EOF
