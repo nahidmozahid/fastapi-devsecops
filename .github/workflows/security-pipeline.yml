@@ -61,7 +61,7 @@ jobs:
       - name: Run OWASP ZAP full scan
         uses: zaproxy/action-full-scan@v0.6.0
         with:
-          target: target: "http://host.docker.internal:8000"
+          target: "http://host.docker.internal:8000"
           cmd_options: "-r zap-report.html"
       - name: Upload ZAP report
         uses: actions/upload-artifact@v4
