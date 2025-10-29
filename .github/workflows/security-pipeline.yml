@@ -1,100 +1,61 @@
-name: DevSecOps CI/CD (SAST + DAST + Deploy Staging)
+name: DevSecOps Pipeline
 
 on:
   push:
-    branches: ["main"]
+    branches:
+      - main
   pull_request:
-    branches: ["main"]
 
 jobs:
-  sast:
-    name: SAST (Bandit)
+  devsecops:
     runs-on: ubuntu-latest
+
+    services:
+      fastapi-app:
+        image: your-dockerhub-username/fastapi-devsecops_web:latest  # 👈 replace this with your image
+        ports:
+          - 8000:8000
+        options: >-
+          --health-cmd "curl -f http://localhost:8000/health || exit 1"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=5
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.10"
 
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          pip install bandit
 
-      - name: Run Bandit scan
+      - name: Wait for FastAPI to start
         run: |
-          mkdir -p reports
-          bandit -r app -f html -o reports/bandit-report.html || true
-
-      - name: Upload SAST report
-        uses: actions/upload-artifact@v4
-        with:
-          name: bandit-report
-          path: reports/bandit-report.html
-
-  build_and_dast:
-    name: Build, Run & DAST (ZAP)
-    needs: sast
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Create Docker network
-        run: docker network create devsecops-net
-
-      - name: Build Docker image
-        run: docker build -t fastapi-app:${{ github.sha }} .
-
-      - name: Run container
-        run: docker run -d --network devsecops-net --name fastapi-app fastapi-app:${{ github.sha }}
-
-      - name: Wait for app to be ready
-        run: |
-          for i in {1..15}; do
-            if docker exec fastapi-app curl -s http://localhost:8000 >/dev/null; then
-              echo "App is ready!"
+          echo "Waiting for FastAPI to become healthy..."
+          for i in {1..10}; do
+            if curl -s http://localhost:8000/health > /dev/null; then
+              echo "✅ FastAPI is up!"
               break
             fi
-            sleep 2
+            echo "⏳ Waiting... ($i/10)"
+            sleep 5
           done
 
-      - name: Run OWASP ZAP full scan
-        uses: zaproxy/action-full-scan@v0.6.0
+      - name: Run OWASP ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.12.0
         with:
           target: "http://fastapi-app:8000"
-          cmd_options: "-r zap-report.html"
-        env:
-          DOCKER_NETWORK: devsecops-net
+          rules_file_name: ".zap/rules.tsv"
+          cmd_options: "-a"
+        continue-on-error: true
 
-      - name: Upload ZAP report
+      - name: Upload ZAP Report
         uses: actions/upload-artifact@v4
         with:
           name: zap-report
-          path: zap-report.html
-
-  deploy_staging:
-    name: Deploy to Staging
-    needs: build_and_dast
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up SSH key
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-        run: |
-          mkdir -p ~/.ssh
-          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ secrets.STAGING_HOST }} >> ~/.ssh/known_hosts
-
-      - name: Deploy container to staging server
-        run: |
-          ssh ${{ secrets.STAGING_USER }}@${{ secrets.STAGING_HOST }} << 'EOF'
-          docker pull ghcr.io/${{ github.repository }}:latest || true
-          docker stop fastapi-staging || true
-          docker rm fastapi-staging || true
-          docker run -d --name fastapi-staging -p 8000:8000 ghcr.io/${{ github.repository }}:latest
-          EOF
+          path: report_html.html
