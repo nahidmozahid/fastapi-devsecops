@@ -99,7 +99,7 @@ IaC Scan	Check Terraform/K8s YAMLs	Checkov, Kics
 
 🖥️ Local Environment Setup:
 # Clone repo
-git clone https://github.com/your-username/fastapi-devsecops.git
+git clone https://github.com/nahidmozahid/fastapi-devsecops.git
 cd fastapi-devsecops
 
 # Create virtual environment
@@ -152,5 +152,6 @@ CI/CD Pipeline will:
 
 Example condition:
 if: success() && !contains(steps.bandit.outputs.severity, 'HIGH')
+
 
 
